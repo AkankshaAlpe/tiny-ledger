@@ -25,7 +25,7 @@ public class AccountApi {
     public ResponseEntity<BalanceResponse> getBalance(@PathVariable String accountId) {
         BalanceResponse response = new BalanceResponse();
         response.setBalance(balanceService.getBalance(accountId));
-        response.setCurrency("USD");
+        response.setCurrency("GBP");
         return ResponseEntity.ok(response);
     }
 

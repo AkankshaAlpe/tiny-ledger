@@ -15,7 +15,7 @@
     <artifactId>tiny-ledger</artifactId>
     <version>1.0.0</version>
     <name>tiny-ledger</name>
-    <description>Tiny Ledger - Contract-first, TDD, Idempotent REST API</description>
+    <description>Tiny Ledger</description>
 
     <properties>
         <java.version>17</java.version>

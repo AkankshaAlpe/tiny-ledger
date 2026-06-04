@@ -2,8 +2,7 @@ openapi: 3.1.0
 info:
   title: Tiny Ledger API
   version: 1.0.0
-  description: |
-    Single-account ledger supporting deposit, withdrawal, balance inquiry,
+  description: Single-account ledger supporting deposit, withdrawal, balance inquiry,
     and transaction history. Mutating endpoints accept an Idempotency-Key
     header (idempotency enforcement is a planned future enhancement).
 
@@ -18,13 +17,12 @@ tags:
     description: Balance and history queries
 
 paths:
-  /api/v1/accounts/{accountId}/transactions/deposit:
+  /api/v1/transactions/deposit:
     post:
       tags: [Transactions]
       operationId: deposit
       summary: Deposit funds into an account
       parameters:
-        - $ref: '#/components/parameters/AccountId'
         - $ref: '#/components/parameters/TransactionId'
       requestBody:
         required: true
@@ -33,6 +31,7 @@ paths:
             schema:
               $ref: '#/components/schemas/TransactionRequest'
             example:
+              accountId: acc-001
               amount: 100.00
               description: "Salary payment"
       responses:
@@ -45,13 +44,12 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
-  /api/v1/accounts/{accountId}/transactions/withdraw:
+  /api/v1/transactions/withdraw:
     post:
       tags: [Transactions]
       operationId: withdraw
       summary: Withdraw funds from an account
       parameters:
-        - $ref: '#/components/parameters/AccountId'
         - $ref: '#/components/parameters/TransactionId'
       requestBody:
         required: true
@@ -60,6 +58,7 @@ paths:
             schema:
               $ref: '#/components/schemas/TransactionRequest'
             example:
+              accountId: acc-001
               amount: 50.00
               description: "Rent payment"
       responses:
@@ -120,9 +119,7 @@ components:
       name: Transaction-Id
       in: header
       required: true
-      description: |
-        Client-generated unique ID for this request (UUID recommended).
-        Reserved for future exactly-once processing — currently accepted but not enforced.
+      description: Client-generated unique ID for this request
       schema:
         type: string
         minLength: 8
@@ -131,8 +128,15 @@ components:
   schemas:
     TransactionRequest:
       type: object
-      required: [amount]
+      required: [accountId, amount]
       properties:
+        accountId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Account to apply the transaction to
+          example: acc-001
         amount:
           type: number
           exclusiveMinimum: 0

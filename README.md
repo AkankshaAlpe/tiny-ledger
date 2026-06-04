@@ -1,6 +1,6 @@
 # Tiny Ledger
 
-A production-quality single-account ledger REST API built with Java 17, Spring Boot 3.3, contract-first design (OpenAPI 3.1), TDD, and idempotent transaction safety.
+A multi-account, in-memory ledger REST API built with Java 17, Spring Boot 3.3, and contract-first design (OpenAPI 3.1). Supports deposits, withdrawals, balance inquiry, and transaction history per account.
 
 ---
 
@@ -12,12 +12,12 @@ A production-quality single-account ledger REST API built with Java 17, Spring B
 # Run the application
 mvn spring-boot:run
 
-# Run tests + coverage report
+# Run all tests + coverage report
 mvn verify
 ```
 
-Swagger UI: http://localhost:8080/swagger-ui.html  
-OpenAPI spec: http://localhost:8080/api-docs  
+Swagger UI: http://localhost:8080/swagger-ui.html
+OpenAPI spec: http://localhost:8080/api-docs
 Coverage report: `target/site/jacoco/index.html`
 
 ---
@@ -26,133 +26,136 @@ Coverage report: `target/site/jacoco/index.html`
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/transactions/deposit` | Deposit funds |
-| `POST` | `/api/v1/transactions/withdraw` | Withdraw funds |
-| `GET` | `/api/v1/balance` | Get current balance |
-| `GET` | `/api/v1/transactions` | Get full transaction history |
+| `POST` | `/api/v1/transactions/deposit` | Deposit funds (`accountId` in body) |
+| `POST` | `/api/v1/transactions/withdraw` | Withdraw funds (`accountId` in body) |
+| `GET`  | `/api/v1/accounts/{accountId}/balance` | Current balance for an account |
+| `GET`  | `/api/v1/accounts/{accountId}/transactions` | Full transaction history (newest first) |
 
-All `POST` endpoints require an `Idempotency-Key` header (8–64 characters, UUID recommended).
+Both `POST` endpoints require a `Transaction-Id` header (8–64 characters, UUID recommended) and an `accountId` in the JSON body.
+
+> **Note:** Writes carry the `accountId` in the request body; reads carry it in the URL path.
 
 ---
 
 ## cURL Examples
 
 ```bash
+ACCOUNT="acc-001"
 KEY=$(uuidgen)
 
 # Deposit
 curl -i -X POST http://localhost:8080/api/v1/transactions/deposit \
-  -H "Idempotency-Key: $KEY" \
+  -H "Transaction-Id: $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"amount": 100.00, "description": "Salary"}'
+  -d '{"accountId": "acc-001", "amount": 100.00, "description": "Salary"}'
 # → 201 Created
 
-# Retry same deposit (idempotent — no double charge)
+# Retry same deposit with the same Transaction-Id (idempotent — no double charge)
 curl -i -X POST http://localhost:8080/api/v1/transactions/deposit \
-  -H "Idempotency-Key: $KEY" \
+  -H "Transaction-Id: $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"amount": 100.00, "description": "Salary"}'
-# → 200 OK (same response, balance still 100)
+  -d '{"accountId": "acc-001", "amount": 100.00, "description": "Salary"}'
+# → 201 Created (original transaction replayed, balance still 100)
 
 # Withdraw
 curl -i -X POST http://localhost:8080/api/v1/transactions/withdraw \
-  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Transaction-Id: $(uuidgen)" \
   -H "Content-Type: application/json" \
-  -d '{"amount": 40.00, "description": "Rent"}'
+  -d '{"accountId": "acc-001", "amount": 40.00, "description": "Rent"}'
 # → 201 Created
 
 # Balance
-curl http://localhost:8080/api/v1/balance
-# → {"balance": 60.00, "currency": "USD"}
+curl http://localhost:8080/api/v1/accounts/acc-001/balance
+# → {"balance": 60.00, "currency": "GBP"}
 
 # Transaction history (newest first)
-curl http://localhost:8080/api/v1/transactions
-
-# Conflict: same key, different payload → 409
-curl -X POST http://localhost:8080/api/v1/transactions/deposit \
-  -H "Idempotency-Key: $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"amount": 999.00}'
-# → 409 Conflict
+curl http://localhost:8080/api/v1/accounts/acc-001/transactions
 ```
 
 ---
 
 ## Architecture & Design
 
-### Methodology
+Request flow:
+
 ```
-OpenAPI Spec (contract) → Generated DTOs & interfaces
-  → Failing tests (TDD Red) → Implementation (Green)
-  → Refactor with SOLID/patterns → Runtime contract validation
+HTTP request
+   ↓  Controller   (HTTP: URLs, status codes, JSON ⇄ DTO)
+   ↓  Service      (one per operation: Deposit / Withdraw / Balance / Transaction)
+   ↓  Store        (shared in-memory state: LedgerStore + IdempotencyStore)
+   ↓  Transaction  (immutable domain record)
 ```
+
+### Components
+
+| Layer | Classes |
+|-------|---------|
+| `controller` | `TransactionApi` (POSTs), `AccountApi` (GETs), `TransactionMapper` (domain → DTO) |
+| `service` | `DepositService`, `WithdrawService`, `BalanceService`, `TransactionService` |
+| `store` | `LedgerStore` (per-account transactions), `IdempotencyStore` (seen `Transaction-Id`s) |
+| `model` | `Transaction` (record), `TransactionType` (enum) |
+| `exception` | `GlobalExceptionHandler` (RFC 7807), `InsufficientFundsException` |
 
 ### Key Design Decisions
 
-**Contract-first (OpenAPI 3.1)**  
-`src/main/resources/api/ledger-api.yaml` is the single source of truth. DTOs and API interfaces are generated via `openapi-generator-maven-plugin`. The Atlassian `swagger-request-validator` validates every response against the spec at test time.
+**Contract-first (OpenAPI 3.1)**
+`src/main/resources/api/ledger-api.yaml` is the single source of truth. DTOs and API interfaces are generated by `openapi-generator-maven-plugin` into `target/generated-sources`. Request validation (account-id pattern, amount, required header) is driven by the spec. The Atlassian `swagger-request-validator` checks every response against the spec in `OpenApiContractTest`.
 
-**Idempotency (Stripe-style)**  
-Every `POST` requires an `Idempotency-Key`. The service uses a cache-aside pattern:
-- New key → process and store result
-- Same key + same payload → return cached result (200, no side effects)
-- Same key + different payload → 409 Conflict
-- In-flight key → 422 Unprocessable Entity
-- Failed request → key cleaned up, retryable with any payload
+**One service per endpoint, shared state in a store**
+Each operation is its own small service. Because they are separate Spring beans, they share state through a single injected `LedgerStore` bean (a `ConcurrentHashMap<accountId, List<Transaction>>`). The balance is derived by summing an account's transactions, never stored as a mutable field.
 
-**SOLID Principles**
+**Idempotency (replay cache)**
+Each `POST` carries a `Transaction-Id`. `IdempotencyStore.replayOrCompute(...)` records the result the first time and replays it on a repeat, so a retried request never creates a second transaction. A failed operation is not recorded, so a corrected retry can reuse the id.
 
-| Principle | Application |
-|-----------|-------------|
-| SRP | `LedgerService` (business rules), `LedgerRepository` (storage), `IdempotencyService` (replay safety), `LedgerController` (HTTP binding) |
-| OCP | New operations added via new `TransactionCommand` implementations — no service changes needed |
-| LSP | `LedgerRepository` interface: swap in-memory → JPA without breaking callers |
-| ISP | Separate `TransactionsApi` and `AccountApi` generated interfaces |
-| DIP | Service depends on `LedgerRepository` abstraction, not `InMemoryLedgerRepository` |
+**Concurrency**
+Deposit and withdraw run their read-balance-then-save sequence inside `synchronized (store)` — locking the *shared* `LedgerStore` instance — so concurrent writes from the separate service beans stay atomic.
 
-**Design Patterns**
+**Money**
+All amounts use `BigDecimal`; `double` is never used, to avoid floating-point errors.
 
-| Pattern | Where |
-|---------|-------|
-| Command | `TransactionCommand` sealed interface → `DepositCommand`, `WithdrawCommand` |
-| Repository | `LedgerRepository` interface hides storage |
-| Cache-Aside | `IdempotencyService` checks store before processing |
-| Factory Method | `Transaction.of(...)` static factory |
-| DTO Mapper | Domain model ↔ generated API DTOs in controller |
+**Error responses**
+All errors follow [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807) (`application/problem+json`), produced centrally by `GlobalExceptionHandler`:
 
-**Error Responses**  
-All errors follow [RFC 7807 Problem Details](https://datatracker.ietf.org/doc/html/rfc7807) (`application/problem+json`).
+| Condition | Status |
+|-----------|--------|
+| Validation failure (bad amount, missing/invalid `accountId`) | 400 |
+| Missing `Transaction-Id` header | 400 |
+| Withdrawal exceeding balance | 400 |
 
 ---
 
 ## Test Strategy
 
-```
+```bash
 mvn verify                    # all tests + JaCoCo (≥85% line coverage enforced)
-mvn pitest:mutationCoverage   # mutation testing (≥70% kill rate)
 ```
 
-| Test class | Coverage |
-|------------|---------|
-| `LedgerServiceTest` | Unit tests — all business rules |
-| `IdempotencyServiceTest` | Unit tests — all idempotency scenarios |
-| `LedgerControllerTest` | Integration tests — HTTP layer via MockMvc |
-| `OpenApiContractTest` | Contract tests — every response validated against the OpenAPI spec |
+Tests mirror the production classes one-to-one:
+
+| Test class | Type | Coverage |
+|------------|------|----------|
+| `DepositServiceTest`, `WithdrawServiceTest`, `BalanceServiceTest`, `TransactionServiceTest` | Unit (no Spring) | Business rules per service |
+| `LedgerStoreTest`, `IdempotencyStoreTest` | Unit | Storage + replay behaviour |
+| `AccountApiTest`, `TransactionApiTest` | Integration (`@SpringBootTest` + MockMvc) | Full HTTP layer |
+| `TransactionMapperTest` | Unit | Domain → DTO mapping |
+| `OpenApiContractTest` | Contract | Every response validated against the OpenAPI spec |
+
+Shared test helpers (ids, JSON, URLs, domain fixtures) live in `utils/FixtureUtils`.
 
 ---
 
 ## Assumptions
 
-- **Single account, single currency (USD)** — multi-account/multi-currency out of scope
-- **In-memory storage** — data is lost on restart; this is by design per the assignment
-- **`BigDecimal` for all money** — `double` is never used to avoid floating-point errors
-- **Idempotency-Key is mandatory** for all `POST` endpoints; missing header returns 400
-- **Idempotency TTL is 24 hours** (configurable in `InMemoryIdempotencyStore`)
-- **Thread-safety** via `synchronized` on write paths + `CopyOnWriteArrayList` for reads
-- **No authentication, no persistence, no logging** — per assignment scope
+- **Multi-account, single currency (GBP)** — accounts are isolated; multi-currency is out of scope.
+- **In-memory storage** — data is lost on restart; this is by design per the assignment.
+- **`BigDecimal` for all money** — `double` is never used.
+- **`Transaction-Id` is mandatory** on both `POST` endpoints; a missing header returns 400.
+- **Thread-safety** via `synchronized (store)` on write paths + `ConcurrentHashMap` for storage.
+- **No authentication, no persistence, no logging** — per assignment scope.
 
 ## Trade-offs
 
-- **OpenAPI 3.1 generator warnings** — the generator officially supports 3.0; 3.1 features like `exclusiveMinimum: 0` (as a number rather than boolean) are not fully translated to Bean Validation annotations, so amount positivity is enforced in the service layer instead
-- **In-memory idempotency store** — uses a simple `ConcurrentHashMap`; a production system would use Redis with atomic compare-and-set
-- **Java 17 instead of 21** — sealed interface `switch` expressions require Java 21; downgraded to Java 17 `instanceof` pattern matching which is available and equivalent
+- **Asymmetric API shape** — writes take `accountId` in the body; reads take it in the path. Intentional, but not a uniform REST resource layout.
+- **In-memory idempotency** — the set of seen `Transaction-Id`s is a plain map with no eviction/TTL, so it grows unbounded. A production system would use a store like Redis with a TTL.
+- **Single-JVM guarantees only** — the `synchronized (store)` atomicity and the idempotency cache are in-process; they do not hold across multiple instances behind a load balancer.
+- **Java 17 instead of 21** — sealed-interface `switch` expressions would need Java 21; the code stays on Java 17.

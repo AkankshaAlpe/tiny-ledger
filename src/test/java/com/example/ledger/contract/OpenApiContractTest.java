@@ -48,32 +48,32 @@ class OpenApiContractTest {
 
     @Test
     void depositResponseConformsToContract() throws Exception {
-        MvcResult result = mockMvc.perform(post("/api/v1/accounts/" + ACCOUNT_ID + "/transactions/deposit")
+        MvcResult result = mockMvc.perform(post("/api/v1/transactions/deposit")
                         .header("Transaction-Id", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(Map.of("amount", 100.00, "description", "Test"))))
+                        .content(objectMapper.writeValueAsString(
+                                Map.of("accountId", ACCOUNT_ID, "amount", 100.00, "description", "Test"))))
                 .andReturn();
 
-        assertResponseConformsToSpec("POST",
-                "/api/v1/accounts/" + ACCOUNT_ID + "/transactions/deposit", result);
+        assertResponseConformsToSpec("POST", "/api/v1/transactions/deposit", result);
     }
 
     @Test
     void withdrawResponseConformsToContract() throws Exception {
-        mockMvc.perform(post("/api/v1/accounts/" + ACCOUNT_ID + "/transactions/deposit")
+        mockMvc.perform(post("/api/v1/transactions/deposit")
                         .header("Transaction-Id", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(Map.of("amount", 500.00))))
+                        .content(objectMapper.writeValueAsString(Map.of("accountId", ACCOUNT_ID, "amount", 500.00))))
                 .andReturn();
 
-        MvcResult result = mockMvc.perform(post("/api/v1/accounts/" + ACCOUNT_ID + "/transactions/withdraw")
+        MvcResult result = mockMvc.perform(post("/api/v1/transactions/withdraw")
                         .header("Transaction-Id", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(Map.of("amount", 100.00, "description", "Test"))))
+                        .content(objectMapper.writeValueAsString(
+                                Map.of("accountId", ACCOUNT_ID, "amount", 100.00, "description", "Test"))))
                 .andReturn();
 
-        assertResponseConformsToSpec("POST",
-                "/api/v1/accounts/" + ACCOUNT_ID + "/transactions/withdraw", result);
+        assertResponseConformsToSpec("POST", "/api/v1/transactions/withdraw", result);
     }
 
     @Test
@@ -83,7 +83,7 @@ class OpenApiContractTest {
     }
 
     @Test
-    void historyResponseConformsToContract() throws Exception {
+    void transactionResponseConformsToContract() throws Exception {
         MvcResult result = mockMvc.perform(get("/api/v1/accounts/" + ACCOUNT_ID + "/transactions")).andReturn();
         assertResponseConformsToSpec("GET", "/api/v1/accounts/" + ACCOUNT_ID + "/transactions", result);
     }
